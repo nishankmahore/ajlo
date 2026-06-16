@@ -7,11 +7,11 @@ description = "Adaptive Join-Aware Layout Optimizer (AJLO): query-history-driven
 readme = "README.md"
 
 authors = [
-    { name = "Nishank Mahore", email = "nishankmahore@gmail.com" }
+
 ]
 
 maintainers = [
-    { name = "Nishank Mahore", email = "nishankmahore@gmail.com" }
+
 ]
 
 license = { text = "Apache-2.0" }
@@ -59,11 +59,6 @@ dependencies = [
     "seaborn>=0.13.2"
 ]
 
-[project.urls]
-Homepage = "https://github.com/nishankmahore/ajlo"
-Repository = "https://github.com/nishankmahore/ajlo"
-Documentation = "https://github.com/nishankmahore/ajlo"
-Issues = "https://github.com/nishankmahore/ajlo/issues"
 
 [build-system]
 requires = ["hatchling"]
