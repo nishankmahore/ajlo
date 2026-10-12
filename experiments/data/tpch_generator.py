@@ -20,7 +20,7 @@ console = Console()
 # Orders processed per Spark write at high SF (keeps Python heap bounded).
 _CHUNK_SIZE = 500_000
 
-RAW_DIR = Path(__file__).parent.parent.parent / "data" / "tpch" / "raw"
+from experiments.config import RAW_DIR, spark_path
 
 # ── Value pools (TPC-H spec) ──────────────────────────────────────────────────
 REGIONS = [
@@ -194,7 +194,7 @@ def write_table(spark, data: list[dict], path: Path, name: str) -> None:
     console.print(f"  Writing {name}: {len(data):,} rows → {_link(path)}")
     path.mkdir(parents=True, exist_ok=True)
     df = spark.createDataFrame(data)
-    df.write.mode("overwrite").parquet(str(path))
+    df.write.mode("overwrite").parquet(spark_path(path))
 
 
 def _write_chunked_stream(spark, stream, path: Path, name: str) -> int:
@@ -207,13 +207,13 @@ def _write_chunked_stream(spark, stream, path: Path, name: str) -> int:
         batch.append(row)
         if len(batch) >= _CHUNK_SIZE:
             mode = "overwrite" if first else "append"
-            spark.createDataFrame(batch).write.mode(mode).parquet(str(path))
+            spark.createDataFrame(batch).write.mode(mode).parquet(spark_path(path))
             total += len(batch)
             batch = []
             first = False
     if batch:
         mode = "overwrite" if first else "append"
-        spark.createDataFrame(batch).write.mode(mode).parquet(str(path))
+        spark.createDataFrame(batch).write.mode(mode).parquet(spark_path(path))
         total += len(batch)
     return total
 
@@ -248,8 +248,8 @@ def _write_orders_lineitem_chunked(spark, rng, orders_n, customer_n,
     def _flush():
         nonlocal total_orders, total_lineitems, first_write
         mode = "overwrite" if first_write else "append"
-        spark.createDataFrame(order_batch).write.mode(mode).parquet(str(orders_path))
-        spark.createDataFrame(lineitem_batch).write.mode(mode).parquet(str(lineitem_path))
+        spark.createDataFrame(order_batch).write.mode(mode).parquet(spark_path(orders_path))
+        spark.createDataFrame(lineitem_batch).write.mode(mode).parquet(spark_path(lineitem_path))
         total_orders += len(order_batch)
         total_lineitems += len(lineitem_batch)
         order_batch.clear()

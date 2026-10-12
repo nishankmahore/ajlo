@@ -9,11 +9,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-DATA_DIR = Path(__file__).parent.parent / "data" / "tpch"
+from experiments.config import DATA_DIR, IS_DATABRICKS, spark_path
 
 
 def get_spark_session(app_name: str = "ajlo", driver_memory: str = "8g"):
-    """Create or retrieve a local PySpark + Delta Lake session."""
+    """Create or retrieve a local PySpark + Delta Lake session.
+
+    On Databricks, return the cluster's existing session instead (Delta is built in).
+    """
+    if IS_DATABRICKS:
+        from pyspark.sql import SparkSession
+        return SparkSession.builder.getOrCreate()
+
     import os
     import sys
     # Remove system Spark env vars that conflict with the venv PySpark install
@@ -160,6 +167,22 @@ def run_query(
     )
 
 
+def time_query(spark, sql: str, repeats: int | None = None,
+               warmup: int | None = None) -> list[float]:
+    """Run sql `warmup` times untimed, then `repeats` timed runs; return ms per run."""
+    from experiments.config import QUERY_REPEATS, QUERY_WARMUP
+    repeats = QUERY_REPEATS if repeats is None else repeats
+    warmup = QUERY_WARMUP if warmup is None else warmup
+    for _ in range(warmup):
+        spark.sql(sql).count()
+    times = []
+    for _ in range(repeats):
+        t0 = time.perf_counter()
+        spark.sql(sql).count()
+        times.append((time.perf_counter() - t0) * 1000.0)
+    return times
+
+
 def count_parquet_files(path: str | Path) -> int:
     """Count the number of Parquet data files at a path (not metadata)."""
     p = Path(path)
@@ -180,7 +203,7 @@ def register_views(spark, layout_dir: Path, suffix: str = "") -> dict[str, int]:
         table_name = table_path.name
         view_name = f"{table_name}{suffix}"
         # All layouts are written as Delta — use Delta reader
-        df = spark.read.format("delta").load(str(table_path))
+        df = spark.read.format("delta").load(spark_path(table_path))
         df.createOrReplaceTempView(view_name)
         file_counts[table_name] = count_parquet_files(table_path)
     return file_counts

@@ -121,6 +121,82 @@ ALL_EXPERIMENT_QUERIES = [
     ),
 ]
 
+
+# RQ3 (physical) benchmark: regime-D queries (part-key / custkey joins that the
+# W5 re-optimisation targets) plus two regime-A queries to expose the regression
+# cost of re-clustering away from orderkey. Ranges written for SF=1 (≈10% of keys).
+RQ3_QUERIES = [
+    (
+        "D1",
+        "SELECT p.p_brand, SUM(l.l_extendedprice * (1 - l.l_discount)) AS revenue "
+        "FROM part p JOIN lineitem l ON p.p_partkey = l.l_partkey "
+        "WHERE p.p_partkey BETWEEN 20000 AND 40000 "
+        "GROUP BY p.p_brand ORDER BY revenue DESC",
+        {
+            "part":     ("p_partkey", 20000, 40000),
+            "lineitem": ("l_partkey", 20000, 40000),
+        },
+    ),
+    (
+        "D2",
+        "SELECT l_shipmode, SUM(l_quantity) AS qty, SUM(l_extendedprice) AS rev "
+        "FROM lineitem "
+        "WHERE l_partkey BETWEEN 100000 AND 120000 "
+        "GROUP BY l_shipmode",
+        {"lineitem": ("l_partkey", 100000, 120000)},
+    ),
+    (
+        "D3",
+        "SELECT ps.ps_partkey, SUM(l.l_quantity * ps.ps_supplycost) AS cost "
+        "FROM partsupp ps JOIN lineitem l "
+        "ON ps.ps_partkey = l.l_partkey AND ps.ps_suppkey = l.l_suppkey "
+        "WHERE ps.ps_partkey BETWEEN 150000 AND 170000 "
+        "GROUP BY ps.ps_partkey ORDER BY cost DESC LIMIT 20",
+        {
+            "partsupp": ("ps_partkey", 150000, 170000),
+            "lineitem": ("l_partkey", 150000, 170000),
+        },
+    ),
+    (
+        "D4",
+        "SELECT c.c_mktsegment, COUNT(*) AS n_orders, SUM(o.o_totalprice) AS total "
+        "FROM customer c JOIN orders o ON c.c_custkey = o.o_custkey "
+        "WHERE c.c_custkey BETWEEN 30000 AND 45000 "
+        "GROUP BY c.c_mktsegment",
+        {
+            "customer": ("c_custkey", 30000, 45000),
+            "orders":   ("o_custkey", 30000, 45000),
+        },
+    ),
+]
+RQ3_QUERIES += [q for q in ALL_EXPERIMENT_QUERIES if q[0] in ("Q01", "Q05")]
+
+
+def _scale_queries(queries: list, sf: int) -> list:
+    """Scale integer key ranges by SF so selectivity is constant across scales;
+    date predicates are scale-independent and stay unchanged. SF=1 is a no-op."""
+    scaled = []
+    for qid, sql, fspec in queries:
+        new_spec = {}
+        for table, (col, lo, hi) in fspec.items():
+            if isinstance(lo, int) and isinstance(hi, int):
+                sql = sql.replace(f"BETWEEN {lo} AND {hi}", f"BETWEEN {lo * sf} AND {hi * sf}")
+                lo, hi = lo * sf, hi * sf
+            new_spec[table] = (col, lo, hi)
+        scaled.append((qid, sql, new_spec))
+    return scaled
+
+
+def get_experiment_queries(sf: int = 1) -> list:
+    """RQ1/RQ2 query set with orderkey ranges scaled by SF (each ≈10% of keys)."""
+    return _scale_queries(ALL_EXPERIMENT_QUERIES, sf)
+
+
+def get_rq3_queries(sf: int = 1) -> list:
+    """RQ3 physical benchmark with key ranges scaled by SF."""
+    return _scale_queries(RQ3_QUERIES, sf)
+
+
 # Documents what column each layout actually clusters on.
 LAYOUT_CLUSTER_KEYS = {
     "b2": {

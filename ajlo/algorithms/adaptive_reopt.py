@@ -9,6 +9,11 @@ from ajlo.algorithms.drift_detector import detect_drift
 from ajlo.algorithms.layout_planner import recommend_layout
 
 
+def _layout_signature(s) -> tuple:
+    """Physical identity of a layout: strategy type plus the keys it uses."""
+    return (s.strategy_type, s.partition_col, tuple(s.cluster_cols))
+
+
 def adaptive_reoptimize(
     graph_old: JoinGraph,
     graph_new: JoinGraph,
@@ -48,7 +53,9 @@ def adaptive_reoptimize(
     for table in all_tables:
         old_s = current_plan.get(table)
         new_s = new_plan.get(table)
-        if old_s.strategy_type != new_s.strategy_type:
+        # A change of key (e.g. CLUSTER BY l_orderkey → l_partkey) is a physical
+        # rewrite just like a change of strategy type.
+        if _layout_signature(old_s) != _layout_signature(new_s):
             # Priority = max JIS of edges involving this table
             priority = max(
                 (e.jis for e in graph_new.edges

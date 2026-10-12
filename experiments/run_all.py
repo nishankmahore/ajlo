@@ -29,11 +29,10 @@ from rich.rule import Rule
 
 console = Console()
 
-RESULTS_DIR = Path(__file__).parent.parent / "results"
-RESULTS_DIR.mkdir(exist_ok=True)
+from experiments.config import RESULTS_DIR
 
-ALL_STEPS = ["generate", "layouts", "rq1", "rq2", "rq3", "rq5"]
-SPARK_STEPS = {"generate", "layouts", "rq1", "rq2"}
+ALL_STEPS = ["generate", "layouts", "rq1", "rq2", "rq3", "rq3phys", "rq3cmp", "rq5", "phi"]
+SPARK_STEPS = {"generate", "layouts", "rq1", "rq2", "rq3phys", "rq3cmp"}
 
 
 def _link(path) -> str:
@@ -47,38 +46,62 @@ def _print_header(title: str) -> None:
 # ── Step functions ────────────────────────────────────────────────────────────
 
 def step_generate(spark, sf: int = 1) -> None:
-    _print_header(f"Step 1/6 — Generate TPC-H SF={sf} data")
-    from experiments.data.tpch_generator import generate
-    generate(spark=spark, sf=sf)
+    _print_header(f"Step — Generate TPC-H SF={sf} data")
+    from experiments.config import IS_DATABRICKS
+    if IS_DATABRICKS or sf >= 10:
+        # Driver-side Python generation does not scale; generate on executors.
+        from experiments.data.tpch_spark_generator import generate as generate_spark
+        generate_spark(spark, sf=sf)
+    else:
+        from experiments.data.tpch_generator import generate
+        generate(spark=spark, sf=sf)
 
 
-def step_layouts(spark, sf: int = 1) -> None:
-    _print_header("Step 2/6 — Build layout baselines (B0, B1, B2, AJLO)")
+def step_layouts(spark, sf: int = 1, only: list[str] | None = None) -> None:
+    _print_header(f"Step 2 — Build layouts ({', '.join(only) if only else 'B0, B1, B2, B3, AJLO'})")
     from experiments.baselines import build_all
-    build_all(spark, sf=sf)
+    build_all(spark, sf=sf, only=only)
 
 
 def step_rq1(spark, sf: int = 1) -> None:
-    _print_header("Step 3/6 — RQ1: Bytes Scanned")
+    _print_header("Step — RQ1: Bytes Scanned")
     from experiments.rq1_scan_reduction import run
     rows = run(spark, sf=sf)
     _summarise_rq1(rows)
 
 
 def step_rq2(spark, sf: int = 1) -> None:
-    _print_header("Step 4/6 — RQ2: File Skip Ratio + Shuffle Bytes")
+    _print_header("Step — RQ2: File Skip Ratio + Shuffle Bytes")
     from experiments.rq2_file_skipping import run
     run(spark, sf=sf)
 
 
 def step_rq3(sf: int = 1) -> None:
-    _print_header("Step 5/6 — RQ3: Workload Drift (algorithm-only, no Spark)")
+    _print_header("Step — RQ3: Workload Drift (algorithm-only, no Spark)")
     from experiments.rq3_drift import run
     run(sf=sf)
 
 
+def step_rq3_physical(spark, sf: int = 1) -> None:
+    _print_header("RQ3 (physical): execute drift-triggered re-clustering on Delta tables")
+    from experiments.rq3_physical import run
+    run(spark, sf=sf)
+
+
+def step_rq3_compare(spark, sf: int = 1) -> None:
+    _print_header("RQ3 (comparison): static layouts vs adaptive AJLO after drift")
+    from experiments.rq3_static_vs_adaptive import run
+    run(spark, sf=sf)
+
+
+def step_phi(sf: int = 1) -> None:
+    _print_header("φ_scan sensitivity sweep (no Spark)")
+    from experiments.phi_sensitivity import run
+    run(sf=sf)
+
+
 def step_rq5() -> None:
-    _print_header("Step 6/6 — RQ5: Greedy Approximation Quality (no Spark)")
+    _print_header("Step — RQ4 (rq5 script): Greedy Approximation Quality (no Spark)")
     from experiments.rq5_approximation import run
     rows = run()
     _summarise_rq5(rows)
@@ -140,12 +163,18 @@ def cli():
     show_default=True,
     help="TPC-H scale factor (1 ≈ 1 GB, 30 ≈ 30 GB, 100 ≈ 100 GB).",
 )
-def run(only: str | None, skip_data: bool, sf: int) -> None:
+@click.option(
+    "--layouts", "layouts",
+    default=None,
+    metavar="NAME[,NAME...]",
+    help="With the layouts step: build only these (b0,b1,b2,b3,ajlo). Default: all.",
+)
+def run(only: str | None, skip_data: bool, sf: int, layouts: str | None) -> None:
     """Run experiment steps."""
     if only:
         steps = [s.strip() for s in only.split(",")]
     elif skip_data:
-        steps = ["rq1", "rq2", "rq3", "rq5"]
+        steps = ["rq1", "rq2", "rq3", "rq3phys", "rq5", "phi"]
     else:
         steps = ALL_STEPS
 
@@ -166,11 +195,15 @@ def run(only: str | None, skip_data: bool, sf: int) -> None:
 
     dispatch = {
         "generate": lambda: step_generate(spark, sf=sf),
-        "layouts":  lambda: step_layouts(spark, sf=sf),
+        "layouts":  lambda: step_layouts(
+            spark, sf=sf, only=[s.strip() for s in layouts.split(",")] if layouts else None),
         "rq1":      lambda: step_rq1(spark, sf=sf),
         "rq2":      lambda: step_rq2(spark, sf=sf),
         "rq3":      lambda: step_rq3(sf=sf),
+        "rq3phys":  lambda: step_rq3_physical(spark, sf=sf),
+        "rq3cmp":   lambda: step_rq3_compare(spark, sf=sf),
         "rq5":      step_rq5,
+        "phi":      lambda: step_phi(sf=sf),
     }
 
     for step in track(steps, description="Experiment steps"):

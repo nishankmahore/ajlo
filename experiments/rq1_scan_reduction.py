@@ -41,19 +41,19 @@ from ajlo.algorithms.join_graph import extract_join_graph
 from ajlo.algorithms.jis import compute_jis
 from ajlo.algorithms.layout_planner import recommend_layout
 from ajlo.models import LayoutPlan, JoinGraph
-from experiments.spark_utils import get_spark_session, register_views
+from experiments.spark_utils import get_spark_session, register_views, time_query
 from experiments.query_logs import generate_query_log, get_cardinalities
 from experiments.delta_stats import bytes_read_with_predicate, total_table_bytes
-from experiments.experiment_queries import ALL_EXPERIMENT_QUERIES
+from experiments.experiment_queries import ALL_EXPERIMENT_QUERIES, get_experiment_queries
 
 console = Console()
 
-RESULTS_DIR = Path(__file__).parent.parent / "results"
-LAYOUTS_DIR = Path(__file__).parent.parent / "data" / "tpch" / "layouts"
+from experiments.config import RESULTS_DIR, LAYOUTS_DIR
 
-LAYOUT_NAMES  = ["b0", "b2", "ajlo"]
-LAYOUT_LABELS = ["B0\n(No opt)", "B2\n(ALC — per-table\nfilter cols)", "AJLO\n(join-aware)"]
-LAYOUT_COLORS = ["#d62728", "#ff7f0e", "#2ca02c"]
+LAYOUT_NAMES  = ["b0", "b2", "b3", "ajlo"]
+LAYOUT_LABELS = ["B0\n(No opt)", "B2\n(ALC — per-table\nfilter cols)",
+                 "B3\n(per-table\nindependent opt)", "AJLO\n(join-aware)"]
+LAYOUT_COLORS = ["#d62728", "#ff7f0e", "#9467bd", "#2ca02c"]
 
 
 
@@ -65,7 +65,7 @@ def run_ajlo_pipeline(sf: int = 1) -> tuple[JoinGraph, LayoutPlan]:
     console.print("\n  [AJLO] Step 1 — Generating query log (500 queries, regime C)...")
     start  = datetime(2024, 1, 1)
     window = (start, start + timedelta(days=7))
-    log    = generate_query_log("C", n_queries=500, start_time=start, seed=0)
+    log    = generate_query_log("C", n_queries=500, start_time=start, seed=0, sf=sf)
 
     console.print("  [AJLO] Step 2 — Algorithm 1: extracting join graph...")
     graph = extract_join_graph(log, window)
@@ -115,18 +115,11 @@ def _measure_bytes(layout_path: Path, filter_spec: dict) -> int:
     return total
 
 
-def _run_query_timed(spark, sql: str) -> float:
-    """Execute query and return wall_time_ms."""
-    t0 = time.perf_counter()
-    spark.sql(sql).count()
-    return (time.perf_counter() - t0) * 1000.0
-
-
 # ── Main run ──────────────────────────────────────────────────────────────────
 
 def run(spark=None, sf: int = 1) -> list[dict]:
     console.print(f"\n=== RQ1: Bytes Scanned per Query (SF={sf}) ===")
-    RESULTS_DIR.mkdir(exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     graph, plan = run_ajlo_pipeline(sf=sf)
 
@@ -134,6 +127,7 @@ def run(spark=None, sf: int = 1) -> list[dict]:
         spark = get_spark_session("rq1-scan-reduction")
 
     all_rows = []
+    run_rows = []   # one row per timed execution (for variance reporting)
 
     for layout in LAYOUT_NAMES:
         layout_path = LAYOUTS_DIR / layout
@@ -145,19 +139,26 @@ def run(spark=None, sf: int = 1) -> list[dict]:
         console.print(f"\n  Layout: {layout.upper()}")
 
         for (qid, sql, filter_spec) in track(
-            ALL_EXPERIMENT_QUERIES, description=f"{layout} queries"
+            get_experiment_queries(sf), description=f"{layout} queries"
         ):
             bytes_read = _measure_bytes(layout_path, filter_spec)
-            wall_ms = _run_query_timed(spark, sql)
+            times = time_query(spark, sql)
+            std = float(np.std(times, ddof=1)) if len(times) > 1 else 0.0
 
             all_rows.append({
-                "layout":       layout,
-                "query_id":     qid,
-                "bytes_read":   bytes_read,
-                "wall_time_ms": round(wall_ms, 1),
+                "layout":              layout,
+                "query_id":            qid,
+                "bytes_read":          bytes_read,
+                "wall_time_ms":        round(float(np.mean(times)), 1),
+                "wall_time_std_ms":    round(std, 1),
+                "wall_time_median_ms": round(float(np.median(times)), 1),
+                "n_runs":              len(times),
             })
+            run_rows += [{"layout": layout, "query_id": qid, "run": i + 1,
+                          "wall_time_ms": round(t, 1)} for i, t in enumerate(times)]
             console.print(
-                f"    {qid}: {bytes_read/1e6:.1f} MB  {wall_ms:.0f} ms"
+                f"    {qid}: {bytes_read/1e6:.1f} MB  {np.mean(times):.0f} ± {std:.0f} ms "
+                f"(n={len(times)})"
             )
 
     if not all_rows:
@@ -167,7 +168,8 @@ def run(spark=None, sf: int = 1) -> list[dict]:
     df = pd.DataFrame(all_rows)
     csv_path = RESULTS_DIR / "rq1.csv"
     df.to_csv(csv_path, index=False)
-    console.print(f"\n  CSV → {csv_path}")
+    pd.DataFrame(run_rows).to_csv(RESULTS_DIR / "rq1_runs.csv", index=False)
+    console.print(f"\n  CSV → {csv_path} (+ rq1_runs.csv: every timed run)")
 
     _plot_bytes_by_layout(all_rows)
     _plot_latency_bar(all_rows)
@@ -218,35 +220,44 @@ def _plot_bytes_by_layout(rows: list[dict]) -> None:
     sns.despine()
     plt.tight_layout()
     out = RESULTS_DIR / "rq1_bytes_scanned.png"
-    plt.savefig(out, dpi=150)
+    plt.savefig(out, dpi=1000)
+    plt.rcParams['ps.fonttype'] = 42
+    out = RESULTS_DIR/ "eps" / "rq1_bytes_scanned.eps"
+    plt.savefig(out, format="eps", bbox_inches="tight")
     plt.close()
     console.print(f"  Chart → {out}")
 
 
 def _plot_latency_bar(rows: list[dict]) -> None:
-
-    records = _rows_to_records(rows, LAYOUT_NAMES, "wall_time_ms", scale=1e-3)
-    df = pd.DataFrame(records)
-    means = df.groupby("Layout", sort=False)["value"].mean().reset_index()
-    label_order = [LAYOUT_LABELS[LAYOUT_NAMES.index(n)]
-                   for n in LAYOUT_NAMES if LAYOUT_LABELS[LAYOUT_NAMES.index(n)] in means["Layout"].values]
-    palette = dict(zip(LAYOUT_LABELS, LAYOUT_COLORS))
+    """Mean per-query latency per layout; error bar = pooled run-to-run std."""
+    df = pd.DataFrame(rows)
+    present = [n for n in LAYOUT_NAMES if n in set(df["layout"])]
+    means, errs = [], []
+    for n in present:
+        sub = df[df["layout"] == n]
+        means.append(sub["wall_time_ms"].mean() / 1e3)
+        errs.append(np.sqrt((sub["wall_time_std_ms"] ** 2).mean()) / 1e3)
+    labels = [LAYOUT_LABELS[LAYOUT_NAMES.index(n)] for n in present]
+    colors = [LAYOUT_COLORS[LAYOUT_NAMES.index(n)] for n in present]
 
     fig, ax = plt.subplots(figsize=(9, 5))
-    sns.barplot(data=means, x="Layout", y="value", order=label_order,
-                palette=palette, edgecolor="black", linewidth=0.6, ax=ax)
+    bars = ax.bar(labels, means, yerr=errs, capsize=6, color=colors,
+                  edgecolor="black", linewidth=0.6)
+    ax.bar_label(bars, labels=[f"{m:.2f} ± {e:.2f} s" for m, e in zip(means, errs)],
+                 padding=3, fontsize=9)
 
-    for container in ax.containers:
-        ax.bar_label(container, fmt="%.1f s", padding=3, fontsize=9)
-
-    ax.set_ylabel("Mean Query Latency (seconds)")
+    n_runs = int(df["n_runs"].max()) if "n_runs" in df else 1
+    ax.set_ylabel(f"Mean Query Latency (seconds)\n[error bar: pooled std over {n_runs} runs]")
     ax.set_xlabel("")
     ax.set_title("RQ1 — Mean Query Latency by Layout\n(lower is better)")
     ax.set_ylim(0, ax.get_ylim()[1] * 1.15)
     sns.despine()
     plt.tight_layout()
     out = RESULTS_DIR / "rq1_query_latency.png"
-    plt.savefig(out, dpi=150)
+    plt.savefig(out, dpi=1000)
+    plt.rcParams['ps.fonttype'] = 42
+    out = RESULTS_DIR/ "eps" / "rq1_query_latency.eps"
+    plt.savefig(out, format="eps", bbox_inches="tight")
     plt.close()
     console.print(f"  Chart → {out}")
 
@@ -299,7 +310,10 @@ def _plot_tradeoff(rows: list[dict]) -> None:
     sns.despine()
     plt.tight_layout()
     out = RESULTS_DIR / "rq1_tradeoff.png"
-    plt.savefig(out, dpi=150)
+    plt.savefig(out, dpi=1000)
+    plt.rcParams['ps.fonttype'] = 42
+    out = RESULTS_DIR/ "eps" / "rq1_tradeoff.eps"
+    plt.savefig(out, format="eps", bbox_inches="tight")
     plt.close()
     console.print(f"  Chart → {out}")
 
@@ -331,7 +345,10 @@ def _plot_jis_ranking(graph: JoinGraph) -> None:
     sns.despine()
     plt.tight_layout()
     out = RESULTS_DIR / "rq1_jis_ranked_edges.png"
-    plt.savefig(out, dpi=150)
+    plt.savefig(out, dpi=1000)
+    plt.rcParams['ps.fonttype'] = 42
+    out = RESULTS_DIR/ "eps" / "rq1_jis_ranked_edges.eps"
+    plt.savefig(out, format="eps", bbox_inches="tight")
     plt.close()
     console.print(f"  Chart → {out}")
 

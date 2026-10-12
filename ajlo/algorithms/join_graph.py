@@ -80,6 +80,8 @@ def extract_join_graph(
       timestamp      : datetime
       cardinalities  : dict[table → int]  — optional row count estimates
 
+    D(i,j) per edge = mean over queries of |T_i| + |T_j| (rows read by the join).
+
     Complexity: O(|Q| · p) where p = max join predicates per query.
     """
     window_start, window_end = window
@@ -103,7 +105,9 @@ def extract_join_graph(
         for ti, ci, tj, cj in predicates:
             key = f"{ti}.{ci}={tj}.{cj}"
             freq[key] += 1
-            data_vol[key] += cards.get(ti, 1.0) * cards.get(tj, 1.0)
+            # Rows a join query reads from both sides; × bytes/row in the cost
+            # model gives real bytes scanned (a product would be rows², not bytes).
+            data_vol[key] += cards.get(ti, 1.0) + cards.get(tj, 1.0)
             exec_cost[key] += cost_per_pred
             edge_meta[key] = (ti, ci, tj, cj)
 

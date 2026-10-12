@@ -122,6 +122,7 @@ def recommend_layout(
         cache[idx] = cand
         heapq.heappush(pq, (-cand.net_npv, idx))
 
+    claimed: dict[str, tuple[str, str]] = {}  # table → (strategy, key) set this round
     seen: set[int] = set()    # fully processed entries
     requeued: set[int] = set()  # stale entries re-queued once; avoid infinite re-queue
 
@@ -167,6 +168,17 @@ def recommend_layout(
         # Apply layout change to both tables
         join_col_i = edge.col_i
         join_col_j = edge.col_j
+
+        # A table keeps the key chosen by the higher-NPV edge that claimed it
+        # earlier in this round; a later edge may only reuse it with the same key.
+        # Without this, low-value edges overwrite high-value assignments.
+        if any(
+            t in claimed and claimed[t] != (stype, c)
+            for t, c in ((edge.table_i, join_col_i), (edge.table_j, join_col_j))
+        ):
+            continue
+        claimed[edge.table_i] = (stype, join_col_i)
+        claimed[edge.table_j] = (stype, join_col_j)
 
         new_plan.strategies[edge.table_i] = LayoutStrategy(
             table=edge.table_i,

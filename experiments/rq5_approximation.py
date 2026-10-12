@@ -39,7 +39,7 @@ from ajlo.cost_model import (
     storage_cost, npv, BYTES_PER_ROW, SCAN_OVERHEAD
 )
 
-RESULTS_DIR = Path(__file__).parent.parent / "results"
+from experiments.config import RESULTS_DIR
 THEORETICAL_BOUND = 1.0 - 1.0 / np.e   # ≈ 0.6321 (Sviridenko bound)
 
 
@@ -184,7 +184,7 @@ def _greedy_npv(
 
 def run() -> list[dict]:
     console.print("\n=== RQ5: Greedy Approximation Quality ===")
-    RESULTS_DIR.mkdir(exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Test configurations: (n_tables, n_edges, budget_fraction)
     configs = [
@@ -258,13 +258,16 @@ def _plot_approx_ratios(rows):
                label=f"Sviridenko bound (1−1/e ≈ {THEORETICAL_BOUND:.3f})")
     ax.axhline(y=1.0, color="black", linestyle="-", linewidth=0.8, alpha=0.5)
     ax.set_ylabel("Approximation Ratio (greedy / optimal)")
-    ax.set_title("RQ5 — Greedy Approximation Quality vs. Brute-Force Optimal\n"
+    ax.set_title("RQ4 — Greedy Approximation Quality vs. Brute-Force Optimal\n"
                  "Green = above theoretical bound; Red = below bound")
     ax.set_ylim(0, 1.15)
     ax.legend()
     plt.tight_layout()
     out = RESULTS_DIR / "rq5_approx_ratio.png"
-    plt.savefig(out, dpi=150)
+    plt.savefig(out, dpi=1000)
+    plt.rcParams['ps.fonttype'] = 42
+    out = RESULTS_DIR/ "eps" / "rq5_approx_ratio.eps"
+    plt.savefig(out, format="eps", bbox_inches="tight")
     plt.close()
     console.print(f"  Chart → {_link(out)}")
 
@@ -284,11 +287,14 @@ def _plot_npv_comparison(rows):
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel("NPV (GB-equivalent)")
-    ax.set_title("RQ5 — Greedy vs. Optimal NPV Across Configurations")
+    ax.set_title("RQ4 — Greedy vs. Optimal NPV Across Configurations")
     ax.legend()
     plt.tight_layout()
     out = RESULTS_DIR / "rq5_npv_comparison.png"
-    plt.savefig(out, dpi=150)
+    plt.savefig(out, dpi=1000)
+    plt.rcParams['ps.fonttype'] = 42
+    out = RESULTS_DIR/ "eps" / "rq5_npv_comparison.eps"
+    plt.savefig(out, format="eps", bbox_inches="tight")
     plt.close()
     console.print(f"  Chart → {_link(out)}")
 

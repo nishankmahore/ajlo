@@ -78,7 +78,7 @@ class TestExtractJoinGraph:
             _make_query(sql, cards={"orders": 2000, "customers": 200}),
         ]
         g = extract_join_graph(log, WINDOW)
-        assert g.edges[0].data_volume == pytest.approx(250_000.0)  # mean of (100k, 400k)
+        assert g.edges[0].data_volume == pytest.approx(1_650.0)  # mean of (1100, 2200)
 
     def test_window_filtering(self):
         in_window = _make_query("SELECT * FROM a JOIN b ON a.id = b.id")

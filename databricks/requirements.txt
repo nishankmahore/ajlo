@@ -1,0 +1,9 @@
+# Extra libraries for Databricks Runtime (15.4 LTS+).
+# Do NOT add pyspark or delta-spark: the runtime provides them, and installing
+# the pip versions breaks the cluster's Spark session.
+# numpy, pandas, matplotlib are preinstalled on DBR.
+networkx>=3.2
+rich>=13.0
+click>=8.1
+seaborn>=0.13.2
+faker>=22.0

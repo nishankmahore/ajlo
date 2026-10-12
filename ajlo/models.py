@@ -17,7 +17,7 @@ class JoinEdge:
     col_i: str
     col_j: str
     frequency: int = 0          # F(i,j) — query count containing this join
-    data_volume: float = 0.0    # D(i,j) — mean cardinality product at query time
+    data_volume: float = 0.0    # D(i,j) — mean rows read |T_i| + |T_j| at query time
     exec_cost: float = 0.0      # C(i,j) — mean execution cost (ms)
     jis: float = 0.0            # Populated by Algorithm 2
 

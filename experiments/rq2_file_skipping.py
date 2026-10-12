@@ -42,16 +42,16 @@ from ajlo.models import LayoutPlan
 from ajlo.cost_model import PHI_SCAN, expected_scan_bytes, scan_reduction
 from experiments.spark_utils import get_spark_session, register_views, _collect_plan_metrics
 from experiments.query_logs import generate_query_log, get_cardinalities
-from experiments.experiment_queries import ALL_EXPERIMENT_QUERIES
+from experiments.experiment_queries import ALL_EXPERIMENT_QUERIES, get_experiment_queries
 from experiments.delta_stats import bytes_read_with_predicate, total_table_bytes
 
-RESULTS_DIR = Path(__file__).parent.parent / "results"
-LAYOUTS_DIR = Path(__file__).parent.parent / "data" / "tpch" / "layouts"
+from experiments.config import RESULTS_DIR, LAYOUTS_DIR
 
 # Layouts compared in RQ2
-LAYOUT_NAMES  = ["b0", "b2", "ajlo"]
-LAYOUT_LABELS = ["B0\n(No opt)", "B2\n(ALC — per-table\nfilter cols)", "AJLO\n(join-aware)"]
-LAYOUT_COLORS = ["#d62728", "#ff7f0e", "#2ca02c"]
+LAYOUT_NAMES  = ["b0", "b2", "b3", "ajlo"]
+LAYOUT_LABELS = ["B0\n(No opt)", "B2\n(ALC — per-table\nfilter cols)",
+                 "B3\n(per-table\nindependent opt)", "AJLO\n(join-aware)"]
+LAYOUT_COLORS = ["#d62728", "#ff7f0e", "#9467bd", "#2ca02c"]
 
 
 # ── AJLO pipeline: steps 1-4 ─────────────────────────────────────────────────
@@ -66,7 +66,7 @@ def run_ajlo_pipeline(sf: int = 1):
     console.print("\n  [AJLO] Step 1 — Generating query log (500 queries, regime C)...")
     start  = datetime(2024, 1, 1)
     window = (start, start + timedelta(days=7))
-    log    = generate_query_log("C", n_queries=500, start_time=start, seed=0)
+    log    = generate_query_log("C", n_queries=500, start_time=start, seed=0, sf=sf)
 
     console.print("  [AJLO] Step 2 — Algorithm 1: extracting join graph...")
     graph = extract_join_graph(log, window)
@@ -118,7 +118,7 @@ def run_ajlo_pipeline(sf: int = 1):
 
 def run(spark=None, sf: int = 1) -> list[dict]:
     console.print(f"\n=== RQ2: File Skip Ratio + Shuffle Bytes (SF={sf}) ===")
-    RESULTS_DIR.mkdir(exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     _, plan, high_jis_qids = run_ajlo_pipeline(sf=sf)
 
@@ -126,7 +126,7 @@ def run(spark=None, sf: int = 1) -> list[dict]:
         spark = get_spark_session("rq2-file-skipping")
 
     # Focus on queries AJLO identified as join-heavy (plus always-included set)
-    target_queries = list(ALL_EXPERIMENT_QUERIES)
+    target_queries = get_experiment_queries(sf)
 
     all_rows = []
 
@@ -154,12 +154,8 @@ def run(spark=None, sf: int = 1) -> list[dict]:
                     files_read  += fr
                     files_total += ft
 
-                # For tables without a predicate add their full file count as must-read
-                for table_name in register_views(spark, layout_path):
-                    if table_name not in fspec:
-                        _, ft = total_table_bytes(layout_path / table_name)
-                        files_read  += ft
-                        files_total += ft
+                # Skip ratio covers only the tables the query filters on; unfiltered
+                # tables are read in full by every layout and would dilute the ratio.
 
                 files_skipped = max(0, files_total - files_read)
                 skip_pct = (files_skipped / files_total * 100.0) if files_total > 0 else 0.0
@@ -241,7 +237,10 @@ def _plot_skip_ratio(rows: list[dict]) -> None:
     ax.set_ylim(0, 100)
     plt.tight_layout()
     out = RESULTS_DIR / "rq2_skip_ratio.png"
-    plt.savefig(out, dpi=150)
+    plt.savefig(out, dpi=1000)
+    plt.rcParams['ps.fonttype'] = 42
+    out = RESULTS_DIR/ "eps" / "rq2_skip_ratio.eps"
+    plt.savefig(out, format="eps", bbox_inches="tight")
     plt.close()
     console.print(f"  Chart → {_link(out)}")
 
@@ -261,7 +260,10 @@ def _plot_shuffle_bytes(rows: list[dict]) -> None:
     ax.set_ylim(0, max(values) * 1.15 if values else 1)
     plt.tight_layout()
     out = RESULTS_DIR / "rq2_shuffle_bytes.png"
-    plt.savefig(out, dpi=150)
+    plt.savefig(out, dpi=1000)
+    plt.rcParams['ps.fonttype'] = 42
+    out = RESULTS_DIR/ "eps" / "rq2_shuffle_bytes.eps"
+    plt.savefig(out, format="eps", bbox_inches="tight")
     plt.close()
     console.print(f"  Chart → {_link(out)}")
 
@@ -297,7 +299,10 @@ def _plot_phi_calibration(rows: list[dict]) -> None:
     ax.set_ylim(0, 100)
     plt.tight_layout()
     out = RESULTS_DIR / "rq2_phi_scan_calibration.png"
-    plt.savefig(out, dpi=150)
+    plt.savefig(out, dpi=1000)
+    plt.rcParams['ps.fonttype'] = 42
+    out = RESULTS_DIR/ "eps" / "rq2_phi_scan_calibration.eps"
+    plt.savefig(out, format="eps", bbox_inches="tight")
     plt.close()
     console.print(f"  Chart → {_link(out)}")
 
